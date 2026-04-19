@@ -1,0 +1,86 @@
+{
+  "name": "MPP Reader — REST example",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "When clicking Test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "filePath": "/data/cronograma.mpp"
+      },
+      "id": "read-binary",
+      "name": "Read Binary File (.mpp)",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "typeVersion": 1,
+      "position": [320, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://mpp-reader-api:8080/query/status",
+        "sendBinaryData": true,
+        "binaryPropertyName": "data",
+        "options": {
+          "bodyContentType": "multipart-form-data"
+        },
+        "bodyParametersUi": {
+          "parameter": []
+        },
+        "headerParametersUi": {
+          "parameter": [
+            { "name": "X-API-Key", "value": "={{$env.MPP_API_KEY || ''}}" }
+          ]
+        },
+        "formDataFormat": true
+      },
+      "id": "http-status",
+      "name": "Get project status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [560, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://mpp-reader-api:8080/query/evm",
+        "sendBinaryData": true,
+        "binaryPropertyName": "data",
+        "options": {
+          "bodyContentType": "multipart-form-data"
+        },
+        "formDataFormat": true
+      },
+      "id": "http-evm",
+      "name": "Get earned value",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [560, 400]
+    },
+    {
+      "parameters": {
+        "functionCode": "const status = $input.first().json;\nconst evm = $('Get earned value').first().json;\nreturn [{\n  json: {\n    capabilities: status.capabilities,\n    status_text: status.output_text,\n    evm_text:    evm.output_text\n  }\n}];"
+      },
+      "id": "merge",
+      "name": "Merge results",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [820, 300]
+    }
+  ],
+  "connections": {
+    "When clicking Test":    { "main": [[{ "node": "Read Binary File (.mpp)", "type": "main", "index": 0 }]] },
+    "Read Binary File (.mpp)": {
+      "main": [[
+        { "node": "Get project status", "type": "main", "index": 0 },
+        { "node": "Get earned value",   "type": "main", "index": 0 }
+      ]]
+    },
+    "Get project status":    { "main": [[{ "node": "Merge results",           "type": "main", "index": 0 }]] },
+    "Get earned value":      { "main": [[{ "node": "Merge results",           "type": "main", "index": 0 }]] }
+  }
+}

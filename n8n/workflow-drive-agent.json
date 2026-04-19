@@ -1,0 +1,109 @@
+{
+  "name": "MPP Reader — Chat + Google Drive (AI Agent)",
+  "nodes": [
+    {
+      "parameters": {
+        "public": true,
+        "options": { "allowedOrigins": "*" }
+      },
+      "id": "chat-trigger",
+      "name": "Chat Trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1,
+      "position": [100, 320]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "fileId": "={{ $vars.MPP_DRIVE_FILE_ID || $json.driveFileId }}",
+        "options": { "binaryPropertyName": "data" }
+      },
+      "id": "drive-download",
+      "name": "Drive — download .mpp",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [320, 320],
+      "credentials": {
+        "googleDriveOAuth2Api": { "id": "<<GOOGLE_DRIVE_CREDENTIAL_ID>>", "name": "Google Drive OAuth" }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Convert the binary from Google Drive into base64 + filename for the MCP tool\nconst binary = item.binary.data;\nreturn {\n  json: {\n    chatInput: $('Chat Trigger').first().json.chatInput,\n    filename: binary.fileName || 'project.mpp',\n    mppBase64: binary.data  // n8n already stores binary as base64\n  }\n};"
+      },
+      "id": "code-prepare",
+      "name": "Prepare input for agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 320]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "Sos un asistente experto en control de proyectos (PMO) que analiza y genera cronogramas de Microsoft Project y Primavera. Tenés acceso a las siguientes tools vía MCP: `list_queries` (descubre las consultas enlatadas), `extract_project` (devuelve el bundle estructurado), `query_project` (corre una consulta: status, critical, evm, baseline, resources, customfields, calendars, overdue, upcoming, slack, find, network, summary-tree), `build_project` (genera un .xml de MS Project), `build_dashboard` (genera HTML ejecutivo self-contained).\n\nReglas de operación:\n1. Cuando el usuario pregunta algo del proyecto, el mensaje de entrada trae `filename` y `mppBase64`. Siempre pasá esos dos valores como `filename` y `file_b64` a las tools que los necesitan.\n2. Para preguntas puntuales (status/crítica/EVM/recursos/atrasos), preferí `query_project` con el nombre exacto de la consulta antes que `extract_project`, porque la respuesta ya viene formateada.\n3. Para preguntas que exigen cálculo libre (ej. \"dame las 5 tareas con mayor variación de costo\"), usá `extract_project` y procesá el bundle.\n4. Cuando el usuario pida \"dashboard\", \"reporte visual\", \"resumen ejecutivo\" o \"informe\", disparás `build_dashboard`, entregás el HTML base64 al siguiente nodo (Write Binary / Slack / email) y en tu respuesta al usuario describís brevemente qué incluye.\n5. Si el usuario pide \"arma un cronograma\" o \"genera un plan\", usás `build_project` con un spec JSON bien formado (ver el documento agent-prompt.md del repo).\n6. Antes de responder con números de EVM, SIEMPRE revisa `capabilities`: si `has_baseline=false` o `has_actuals=false`, decí explícitamente qué falta y ofrecé alternativas (ej. solo métricas de avance si hay actuals pero no baseline).\n7. Cuando reportés tablas, usá markdown compacto (≤20 filas). Para números monetarios usá el símbolo del proyecto (`project.header.currency_symbol`).\n8. Si el usuario pregunta en español, respondé en español. Si mezcla idiomas, seguí el idioma dominante.\n9. No inventés valores. Si una métrica no se puede calcular con los datos del archivo, decilo y sugerí qué campo falta.\n\nCasos frecuentes y tool que dispararías:\n- \"¿Cómo vamos?\" → `query_project(query='status')`.\n- \"¿Cuál es la ruta crítica?\" → `query_project(query='critical')`.\n- \"Dame SPI y CPI\" → `query_project(query='evm')`.\n- \"¿Qué tareas están atrasadas?\" → `query_project(query='overdue')`.\n- \"¿Qué empieza la próxima semana?\" → `query_project(query='upcoming', days=7)`.\n- \"¿Quién está sobreasignado?\" → `query_project(query='resources')`.\n- \"Encontrá las tareas con 'SALA'\" → `query_project(query='find', name='SALA')`.\n- \"Dame un dashboard\" → `build_dashboard(...)`.\n- \"Variación vs línea base\" → `query_project(query='baseline')`.\n- \"¿Qué custom fields hay?\" → `query_project(query='customfields')`.\n- \"Explicame los calendarios\" → `query_project(query='calendars')`.\n- \"¿Cuántas tareas hay?\" / \"Resumen del archivo\" → `extract_project(...)` y reportás counts + capabilities."
+        }
+      },
+      "id": "ai-agent",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1,
+      "position": [820, 320]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-6",
+        "options": { "temperature": 0.2 }
+      },
+      "id": "llm",
+      "name": "Claude Sonnet 4.6",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [660, 540],
+      "credentials": {
+        "anthropicApi": { "id": "<<ANTHROPIC_CREDENTIAL_ID>>", "name": "Anthropic API" }
+      }
+    },
+    {
+      "parameters": {
+        "sseEndpoint": "={{ $env.MPP_MCP_URL || 'http://mpp-reader-mcp:8765/sse' }}",
+        "includeAllTools": true
+      },
+      "id": "mcp-client",
+      "name": "MPP Reader (MCP)",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1,
+      "position": [820, 540]
+    },
+    {
+      "parameters": {
+        "jsCode": "// If the agent produced an HTML dashboard (build_dashboard tool result), extract it\n// and surface as a binary on a second output branch.\nconst agentOutput = $input.first().json;\nconst result = { json: { reply: agentOutput.output || agentOutput.text || agentOutput } };\n\n// Look for a tool-call result with file_b64 shape in the agent's intermediate steps\nconst steps = agentOutput.intermediateSteps || [];\nfor (const step of steps) {\n  const obs = step.observation;\n  if (obs && obs.file_b64 && obs.filename) {\n    result.binary = {\n      data: {\n        data: obs.file_b64,\n        fileName: obs.filename,\n        mimeType: obs.filename.endsWith('.html') ? 'text/html' :\n                  obs.filename.endsWith('.xml')  ? 'application/xml' :\n                  'application/octet-stream'\n      }\n    };\n    break;\n  }\n}\nreturn result;"
+      },
+      "id": "extract-binary",
+      "name": "Extract file attachment (if any)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 320]
+    },
+    {
+      "parameters": {
+        "content": "={{ $json.reply }}"
+      },
+      "id": "chat-reply",
+      "name": "Reply in chat",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1,
+      "position": [1340, 220]
+    }
+  ],
+  "connections": {
+    "Chat Trigger":                { "main": [[{ "node": "Drive — download .mpp",    "type": "main", "index": 0 }]] },
+    "Drive — download .mpp":       { "main": [[{ "node": "Prepare input for agent",  "type": "main", "index": 0 }]] },
+    "Prepare input for agent":     { "main": [[{ "node": "AI Agent",                 "type": "main", "index": 0 }]] },
+    "Claude Sonnet 4.6":           { "ai_languageModel": [[{ "node": "AI Agent", "type": "ai_languageModel", "index": 0 }]] },
+    "MPP Reader (MCP)":            { "ai_tool":          [[{ "node": "AI Agent", "type": "ai_tool",          "index": 0 }]] },
+    "AI Agent":                    { "main": [[{ "node": "Extract file attachment (if any)", "type": "main", "index": 0 }]] },
+    "Extract file attachment (if any)": { "main": [[{ "node": "Reply in chat", "type": "main", "index": 0 }]] }
+  }
+}

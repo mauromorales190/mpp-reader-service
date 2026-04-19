@@ -1,0 +1,55 @@
+{
+  "name": "MPP Reader — MCP (AI Agent) example",
+  "nodes": [
+    {
+      "parameters": {
+        "public": true,
+        "options": { "allowedOrigins": "*" }
+      },
+      "id": "webhook",
+      "name": "Chat trigger",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1,
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are a project controls assistant. When the user asks a schedule question, call the MPP Reader tools. Prefer `query_project` with the most relevant canned query; only use `extract_project` when you need to compute something custom. Always report the `capabilities` flags back to the user so they know what the file does or does not support. If a file is not attached, ask for it."
+        }
+      },
+      "id": "ai-agent",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1,
+      "position": [400, 300]
+    },
+    {
+      "parameters": {
+        "sseEndpoint": "http://mpp-reader-mcp:8765/sse",
+        "includeAllTools": true
+      },
+      "id": "mcp-client",
+      "name": "MPP Reader (MCP)",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1,
+      "position": [400, 520]
+    },
+    {
+      "parameters": {
+        "model": "claude-sonnet-4-6",
+        "options": {}
+      },
+      "id": "llm",
+      "name": "Claude Sonnet 4.6",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [250, 520]
+    }
+  ],
+  "connections": {
+    "Chat trigger":     { "main":      [[{ "node": "AI Agent",          "type": "main",      "index": 0 }]] },
+    "Claude Sonnet 4.6":{ "ai_languageModel": [[{ "node": "AI Agent",   "type": "ai_languageModel", "index": 0 }]] },
+    "MPP Reader (MCP)": { "ai_tool":   [[{ "node": "AI Agent",          "type": "ai_tool",   "index": 0 }]] }
+  }
+}

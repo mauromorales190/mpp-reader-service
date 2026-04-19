@@ -1,0 +1,30 @@
+# Starts both the REST API and the MCP server against the same skill scripts.
+# Customize MPP_API_KEY / MPP_MCP_API_KEY before exposing beyond localhost.
+#
+#   docker compose up --build
+#
+# Endpoints:
+#   REST:  http://localhost:8080/health        (and /docs for interactive Swagger)
+#   MCP:   http://localhost:8765/sse           (SSE transport for n8n's MCP Client)
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: mpp-reader-api
+    ports:
+      - "8080:8080"
+    environment:
+      MPP_API_KEY: ""            # set to a secret to require X-API-Key
+      MPP_MAX_UPLOAD_MB: "50"
+    restart: unless-stopped
+
+  mcp:
+    build:
+      context: .
+      dockerfile: mcp/Dockerfile
+    container_name: mpp-reader-mcp
+    ports:
+      - "8765:8765"
+    restart: unless-stopped

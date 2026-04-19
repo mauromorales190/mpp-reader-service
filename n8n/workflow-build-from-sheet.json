@@ -1,0 +1,107 @@
+{
+  "name": "MPP Builder — from Google Sheet",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "When clicking Test",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [80, 300]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "sheetId": "<<YOUR_SHEET_ID>>",
+        "range": "Tasks!A1:H200",
+        "options": { "useHeaders": true }
+      },
+      "id": "read-tasks",
+      "name": "Read Tasks sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [300, 200]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "sheetId": "<<YOUR_SHEET_ID>>",
+        "range": "Resources!A1:F50",
+        "options": { "useHeaders": true }
+      },
+      "id": "read-resources",
+      "name": "Read Resources sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [300, 380]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "sheetId": "<<YOUR_SHEET_ID>>",
+        "range": "Assignments!A1:E300",
+        "options": { "useHeaders": true }
+      },
+      "id": "read-assignments",
+      "name": "Read Assignments sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [300, 560]
+    },
+    {
+      "parameters": {
+        "functionCode": "// Reshape three sheets into the build_project JSON spec.\nconst tasksRows       = $('Read Tasks sheet').all().map(i => i.json);\nconst resourceRows    = $('Read Resources sheet').all().map(i => i.json);\nconst assignmentRows  = $('Read Assignments sheet').all().map(i => i.json);\n\n// Tasks: expected columns id, name, outline_level, duration, predecessors, EV_method, milestone, deadline\nconst tasks = tasksRows.filter(r => r.id).map(r => {\n  const t = {\n    id: Number(r.id),\n    name: r.name,\n    outline_level: Number(r.outline_level || 1)\n  };\n  if (String(r.summary).toLowerCase() === 'true') t.summary = true;\n  if (String(r.milestone).toLowerCase() === 'true') t.milestone = true;\n  if (r.duration) t.duration = String(r.duration);\n  if (r.deadline) t.deadline = r.deadline;\n  if (r.EV_method) t.earned_value_method = r.EV_method;\n  if (r.percent_complete) t.percent_complete = Number(r.percent_complete);\n  // predecessors: \"3FS+0d, 4SS-1d\" → [{id:3,type:FS,lag:0d}, {id:4,type:SS,lag:-1d}]\n  if (r.predecessors) {\n    t.predecessors = String(r.predecessors).split(',').map(s => s.trim()).filter(Boolean).map(token => {\n      const m = token.match(/^(\\d+)([A-Za-z]{2})?([+\\-]?[\\d.]+[a-z]+)?$/);\n      return m ? { id: Number(m[1]), type: m[2] || 'FS', lag: m[3] || '0d' } : null;\n    }).filter(Boolean);\n  }\n  return t;\n});\n\nconst resources = resourceRows.filter(r => r.id).map(r => ({\n  id: Number(r.id),\n  name: r.name,\n  type: (r.type || 'WORK').toUpperCase(),\n  max_units: r.max_units ? Number(r.max_units) : 100,\n  standard_rate: r.standard_rate || undefined,\n  material_label: r.material_label || undefined\n}));\n\nconst assignments = assignmentRows.filter(r => r.task_id).map(r => ({\n  task_id: Number(r.task_id),\n  resource_id: Number(r.resource_id),\n  units: r.units ? Number(r.units) : 100,\n  work: r.work || undefined\n}));\n\nconst spec = {\n  project: {\n    title: $vars.PROJECT_TITLE || 'Generated Project',\n    start_date: $vars.START_DATE || new Date().toISOString().slice(0,10),\n    default_calendar: 'Standard',\n    minutes_per_day: 480,\n    minutes_per_week: 2400,\n    currency_symbol: '$',\n    currency_code: $vars.CURRENCY || 'COP',\n    default_task_ev_method: 'PERCENT_COMPLETE'\n  },\n  resources,\n  tasks,\n  assignments,\n  options: { save_baseline: true }\n};\n\nreturn [{ json: { spec } }];"
+      },
+      "id": "shape-spec",
+      "name": "Shape into spec",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [600, 380]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://mpp-reader-api:8080/build?format=xml&download=true",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json.spec}}",
+        "options": {
+          "response": { "response": { "responseFormat": "file" } }
+        },
+        "headerParametersUi": {
+          "parameter": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-API-Key", "value": "={{$env.MPP_API_KEY || ''}}" }
+          ]
+        }
+      },
+      "id": "http-build",
+      "name": "POST /build",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [840, 380]
+    },
+    {
+      "parameters": {
+        "fileName": "={{ ($vars.PROJECT_TITLE || 'project').replace(/\\s+/g,'_') }}.xml"
+      },
+      "id": "write-binary",
+      "name": "Write .xml to disk",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [1080, 380]
+    }
+  ],
+  "connections": {
+    "When clicking Test":     { "main": [[
+      { "node": "Read Tasks sheet",       "type": "main", "index": 0 },
+      { "node": "Read Resources sheet",   "type": "main", "index": 0 },
+      { "node": "Read Assignments sheet", "type": "main", "index": 0 }
+    ]]},
+    "Read Tasks sheet":       { "main": [[{ "node": "Shape into spec", "type": "main", "index": 0 }]] },
+    "Read Resources sheet":   { "main": [[{ "node": "Shape into spec", "type": "main", "index": 0 }]] },
+    "Read Assignments sheet": { "main": [[{ "node": "Shape into spec", "type": "main", "index": 0 }]] },
+    "Shape into spec":        { "main": [[{ "node": "POST /build",     "type": "main", "index": 0 }]] },
+    "POST /build":            { "main": [[{ "node": "Write .xml to disk", "type": "main", "index": 0 }]] }
+  }
+}
