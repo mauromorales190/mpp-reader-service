@@ -365,6 +365,109 @@ def query_project(
 
 # ---- entry point ------------------------------------------------------------
 
+def _build_http_app():
+    """Build a Starlette app that serves the MCP SSE endpoint AND plain HTTP
+    endpoints for direct file upload (bypassing the LLM entirely). This is how
+    n8n avoids the base64-through-LLM truncation problem: it posts the binary
+    directly to /extract or /dashboard, and only passes the small JSON bundle
+    (or the final HTML) to the LLM."""
+    from starlette.routing import Route
+    from starlette.responses import JSONResponse, Response
+
+    app = mcp.sse_app()
+
+    async def http_health(request):
+        return JSONResponse({
+            "service": "mpp-reader-mcp",
+            "status": "ok",
+            "endpoints": ["/sse", "/messages/", "/extract", "/query/{name}",
+                          "/dashboard", "/build", "/health"],
+            "tools": ["list_queries", "extract_project", "query_project",
+                      "build_project", "build_dashboard"],
+        })
+
+    async def http_extract(request):
+        """POST multipart 'file' → full JSON bundle."""
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            return JSONResponse({"error": "multipart field 'file' is required"}, status_code=400)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            in_path = tmp_p / (upload.filename or "project.mpp")
+            in_path.write_bytes(await upload.read())
+            try:
+                bundle = _extract(in_path)
+                return JSONResponse(_load_bundle(bundle))
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+    async def http_query(request):
+        """POST multipart 'file' + path name → canned query result."""
+        name = request.path_params["name"]
+        if name not in QUERIES:
+            return JSONResponse({"error": f"Unknown query '{name}'"}, status_code=400)
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            return JSONResponse({"error": "multipart field 'file' is required"}, status_code=400)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            in_path = tmp_p / (upload.filename or "project.mpp")
+            in_path.write_bytes(await upload.read())
+            try:
+                bundle = _extract(in_path)
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+            cmd = ["python3", str(QUERY), str(bundle), name,
+                   "--days", str(form.get("days") or 14),
+                   "--limit", str(form.get("limit") or 50)]
+            if form.get("task_name"):
+                cmd += ["--name", str(form.get("task_name"))]
+            if form.get("wbs"):
+                cmd += ["--wbs", str(form.get("wbs"))]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                return JSONResponse({"error": r.stderr or r.stdout}, status_code=500)
+            return JSONResponse({
+                "query": name,
+                "capabilities": _load_bundle(bundle)["project"]["capabilities"],
+                "output_text": r.stdout,
+            })
+
+    async def http_dashboard(request):
+        """POST multipart 'file' (+ optional 'title') → HTML dashboard."""
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            return JSONResponse({"error": "multipart field 'file' is required"}, status_code=400)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            in_path = tmp_p / (upload.filename or "project.mpp")
+            in_path.write_bytes(await upload.read())
+            html_path = tmp_p / "dashboard.html"
+            cmd = ["python3", str(DASHBOARD), str(in_path), "--out", str(html_path)]
+            if form.get("title"):
+                cmd += ["--title", str(form.get("title"))]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                return JSONResponse({"error": r.stderr or r.stdout}, status_code=500)
+            data = html_path.read_bytes()
+            name = (in_path.stem.replace(" ", "_") or "project") + "-dashboard.html"
+            return Response(
+                content=data, media_type="text/html",
+                headers={"Content-Disposition": f'attachment; filename="{name}"'}
+            )
+
+    app.routes.extend([
+        Route("/health", http_health, methods=["GET"]),
+        Route("/extract", http_extract, methods=["POST"]),
+        Route("/query/{name}", http_query, methods=["POST"]),
+        Route("/dashboard", http_dashboard, methods=["POST"]),
+    ])
+    return app
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="mpp-reader MCP server")
     ap.add_argument("--transport", default="stdio", choices=["stdio", "sse"],
@@ -374,10 +477,10 @@ def main() -> None:
     args = ap.parse_args()
 
     if args.transport == "sse":
-        # Configure SSE transport on FastMCP
         mcp.settings.host = args.host
         mcp.settings.port = args.port
-        mcp.run(transport="sse")
+        import uvicorn
+        uvicorn.run(_build_http_app(), host=args.host, port=args.port)
     else:
         mcp.run()  # stdio
 
