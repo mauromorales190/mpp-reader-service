@@ -102,7 +102,10 @@ def _extract(in_path: Path) -> Path:
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        raise RuntimeError(f"extract_project.py failed: {r.stderr or r.stdout}")
+        parts = ["extract_project.py failed."]
+        if r.stderr.strip(): parts.append(f"STDERR:\n{r.stderr.strip()}")
+        if r.stdout.strip(): parts.append(f"STDOUT:\n{r.stdout.strip()}")
+        raise RuntimeError("\n".join(parts))
     return out_dir
 
 
