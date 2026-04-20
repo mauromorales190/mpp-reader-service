@@ -307,26 +307,58 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   footer {{ padding:16px 32px; color:var(--mute); font-size:12px; border-top:1px solid var(--line); }}
   canvas {{ max-width:100%; }}
 
-  /* --- Gantt CSS nativo (no Chart.js) --- */
+  /* --- Gantt CSS nativo (no Chart.js) — estilo Tracking Gantt de MS Project --- */
   .gantt {{ font-size:12px; }}
-  .gantt-header {{ display:flex; border-bottom:2px solid var(--line); height:26px; background:#f9fafb; }}
-  .gantt-header-label {{ width:220px; padding:6px 10px; font-weight:600; color:var(--mute); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }}
+  .gantt-header {{ display:flex; border-bottom:2px solid var(--line); height:28px; background:#f9fafb; }}
+  .gantt-header-label {{ width:240px; padding:8px 10px; font-weight:600; color:var(--mute); font-size:11px; text-transform:uppercase; letter-spacing:.05em; flex-shrink:0; }}
   .gantt-header-axis {{ flex:1; position:relative; }}
-  .gantt-tick {{ position:absolute; top:0; bottom:0; border-left:1px dashed #e5e7eb; font-size:10px; color:var(--mute); padding-left:3px; padding-top:6px; }}
-  .gantt-row {{ display:flex; height:22px; border-bottom:1px solid #f3f4f6; align-items:center; }}
+  .gantt-tick {{ position:absolute; top:0; bottom:0; border-left:1px dashed #e5e7eb; font-size:10px; color:var(--mute); padding-left:3px; padding-top:8px; }}
+  /* Each row holds TWO bars: the scheduled bar on top, and a baseline bar below it. */
+  .gantt-row {{ display:flex; height:32px; border-bottom:1px solid #f3f4f6; align-items:center; }}
   .gantt-row:hover {{ background:#f9fafb; }}
-  .gantt-label {{ width:220px; padding:0 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-  .gantt-label.summary {{ font-weight:600; }}
-  .gantt-label.milestone {{ color:var(--crit); }}
-  .gantt-track {{ flex:1; position:relative; height:22px; background:#fafbfc; }}
-  .gantt-today {{ position:absolute; top:0; bottom:0; width:1px; background:var(--bad); z-index:2; }}
-  .gantt-today:before {{ content:'hoy'; position:absolute; top:-16px; left:-12px; font-size:9px; color:var(--bad); font-weight:700; white-space:nowrap; }}
-  .gantt-bar {{ position:absolute; top:5px; height:12px; border-radius:2px; min-width:2px; }}
-  .gantt-bar-done {{ background:var(--ok); }}
-  .gantt-bar-critical {{ background:var(--crit); }}
-  .gantt-bar-normal {{ background:var(--brand); }}
-  .gantt-bar-milestone {{ background:var(--crit); width:12px !important; height:12px; transform:rotate(45deg); border-radius:2px; }}
-  .gantt-progress {{ position:absolute; top:0; left:0; height:100%; background:rgba(0,0,0,0.25); border-radius:2px 0 0 2px; }}
+  .gantt-label {{ width:240px; padding:0 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex-shrink:0; }}
+  .gantt-label.summary {{ font-weight:700; color:#111827; }}
+  .gantt-label.milestone {{ color:var(--crit); font-weight:600; }}
+  .gantt-track {{ flex:1; position:relative; height:32px; background:#fafbfc; }}
+  .gantt-today {{ position:absolute; top:0; bottom:0; width:1px; background:var(--bad); z-index:4; pointer-events:none; }}
+  .gantt-today:before {{ content:'hoy'; position:absolute; top:-18px; left:-10px; font-size:9px; color:var(--bad); font-weight:700; white-space:nowrap; }}
+
+  /* === Scheduled bar (top half of the row) === */
+  .gantt-bar {{ position:absolute; top:4px; height:11px; border-radius:2px; min-width:3px; z-index:2; }}
+  .gantt-bar.normal   {{ background:var(--brand); }}
+  .gantt-bar.done     {{ background:var(--ok); }}
+  .gantt-bar.critical {{ background:var(--crit); }}
+  /* Summary (scheduled): thin black bar with triangular ends */
+  .gantt-bar.summary  {{ background:#111827; height:6px; top:5px; border-radius:1px; }}
+  .gantt-bar.summary:before,
+  .gantt-bar.summary:after {{ content:''; position:absolute; top:6px; width:0; height:0;
+     border-top:5px solid #111827; border-left:3px solid transparent; border-right:3px solid transparent; }}
+  .gantt-bar.summary:before {{ left:0; }}
+  .gantt-bar.summary:after  {{ right:0; }}
+  /* Milestone (scheduled): diamond centered on the date */
+  .gantt-bar.milestone {{ background:var(--crit); width:12px !important; height:12px;
+     transform:translateX(-50%) rotate(45deg); border-radius:1px; top:4px; }}
+  /* Progress overlay: blanquea la parte no completada */
+  .gantt-progress {{ position:absolute; top:0; height:100%; background:rgba(255,255,255,0.45); border-radius:0 2px 2px 0; }}
+
+  /* === Baseline bar (bottom half of the row) — Tracking Gantt style === */
+  .gantt-baseline {{ position:absolute; top:18px; height:8px; border-radius:2px; min-width:3px;
+                     background:#6b7280; opacity:0.85; z-index:1; }}
+  .gantt-baseline.summary  {{ background:#4b5563; height:4px; top:20px; border-radius:1px; }}
+  .gantt-baseline.summary:before,
+  .gantt-baseline.summary:after {{ content:''; position:absolute; top:4px; width:0; height:0;
+     border-top:4px solid #4b5563; border-left:3px solid transparent; border-right:3px solid transparent; }}
+  .gantt-baseline.summary:before {{ left:0; }}
+  .gantt-baseline.summary:after  {{ right:0; }}
+  .gantt-baseline.milestone {{ background:#6b7280; width:9px !important; height:9px;
+     transform:translateX(-50%) rotate(45deg); border-radius:1px; top:19px; opacity:0.85; }}
+
+  /* === Legend === */
+  .gantt-legend {{ display:flex; gap:14px; margin-top:10px; font-size:11px; color:var(--mute); align-items:center; flex-wrap:wrap; }}
+  .gantt-legend .sw {{ display:inline-block; width:14px; height:8px; border-radius:2px; margin-right:5px; vertical-align:middle; }}
+  .gantt-legend .sw-milestone {{ width:8px; height:8px; transform:rotate(45deg); border-radius:1px; }}
+  .gantt-legend .sw-summary {{ height:4px; background:#111827; }}
+  .gantt-legend .sw-baseline {{ background:#6b7280; opacity:0.85; }}
 </style>
 </head>
 <body>
@@ -517,24 +549,60 @@ def _pct_color(x):
 # CSS Gantt builder
 # ---------------------------------------------------------------------------
 
-def _build_gantt_html(tasks, status_date, include_summaries=True, max_rows=80):
+def _build_gantt_html(tasks, status_date, bl_index=0, include_summaries=True, max_rows=120):
     """Render the Gantt as a block of nested divs — one row per task,
-    with a colored bar positioned and sized by baseline min/max."""
+    with a scheduled bar on top and a baseline bar below (à la MS Project's
+    Tracking Gantt view), each absolutely positioned and sized by their dates.
+
+    The time axis runs from the earliest of (scheduled start, baseline start)
+    to the latest of (scheduled finish, baseline finish) across all rendered
+    rows, so a baseline that's earlier or later than the current schedule
+    still fits visibly inside the chart.
+
+    Milestones render as diamonds centered on their date; summary tasks render
+    as thin dark bars with notched ends; leaf tasks render as colored
+    rectangles with a translucent overlay marking the % not yet completed."""
     rows = []
     for t in tasks:
-        if not include_summaries and t["summary"]: continue
-        if parse_dt(t.get("start")) and parse_dt(t.get("finish")):
-            rows.append(t)
+        if not include_summaries and t["summary"]:
+            continue
+        s = parse_dt(t.get("start"))
+        f = parse_dt(t.get("finish"))
+        if s is None or f is None:
+            continue
+        rows.append(t)
     if not rows:
         return "<p style='color:var(--mute);'>No hay tareas con fechas para graficar.</p>"
-    rows.sort(key=lambda t: (parse_dt(t["start"]), t.get("id") or 0))
+
+    # Preserve the schedule's visual order: sort by outline number if present,
+    # else by (start, id). This keeps summaries above their children.
+    def _sort_key(t):
+        on = t.get("outline_number") or ""
+        try:
+            parts = [int(p) for p in str(on).split(".") if p]
+        except Exception:
+            parts = []
+        return (parts or [10**9], parse_dt(t["start"]), t.get("id") or 0)
+    rows.sort(key=_sort_key)
     rows = rows[:max_rows]
 
-    start_min = min(parse_dt(t["start"]) for t in rows)
-    finish_max = max(parse_dt(t["finish"]) for t in rows)
-    # Extend a bit to the right for breathing room
+    # The time axis has to cover both scheduled AND baseline ranges so
+    # neither gets clipped when the schedule slipped a lot vs the baseline.
+    all_dates = []
+    for t in rows:
+        s = parse_dt(t["start"]); f = parse_dt(t["finish"])
+        if s: all_dates.append(s)
+        if f: all_dates.append(f)
+        bl = (t.get("baseline_sets") or {}).get(str(bl_index)) or (t.get("baseline_sets") or {}).get(bl_index)
+        if bl:
+            bs = parse_dt(bl.get("start")); bf = parse_dt(bl.get("finish"))
+            if bs: all_dates.append(bs)
+            if bf: all_dates.append(bf)
+    start_min = min(all_dates) if all_dates else parse_dt(rows[0]["start"])
+    finish_max = max(all_dates) if all_dates else parse_dt(rows[0]["finish"])
     span = (finish_max - start_min).total_seconds()
-    if span <= 0: span = 86400
+    if span <= 0:
+        span = 86400  # guard against divide-by-zero (single-day project)
 
     # Build month ticks for the header axis
     ticks = []
@@ -542,68 +610,106 @@ def _build_gantt_html(tasks, status_date, include_summaries=True, max_rows=80):
     while cur <= finish_max:
         pct = max(0, (cur - start_min).total_seconds() / span * 100)
         ticks.append((cur.strftime("%b %Y"), pct))
-        # advance by month
-        if cur.month == 12:
-            cur = datetime(cur.year + 1, 1, 1)
-        else:
-            cur = datetime(cur.year, cur.month + 1, 1)
+        cur = datetime(cur.year + (1 if cur.month == 12 else 0),
+                       1 if cur.month == 12 else cur.month + 1, 1)
 
     today_pct = max(0, min(100, (status_date - start_min).total_seconds() / span * 100))
 
     parts = ['<div class="gantt">']
+
     # Header with month labels
     parts.append('<div class="gantt-header">')
     parts.append('<div class="gantt-header-label">Tarea</div>')
     parts.append('<div class="gantt-header-axis">')
     for label, pct in ticks:
         parts.append(f'<div class="gantt-tick" style="left:{pct:.2f}%">{esc(label)}</div>')
+    parts.append(f'<div class="gantt-today" style="left:{today_pct:.2f}%"></div>')
     parts.append('</div></div>')
 
     for t in rows:
         s = parse_dt(t["start"])
         f = parse_dt(t["finish"])
-        left = (s - start_min).total_seconds() / span * 100
-        width = max(0.3, (f - s).total_seconds() / span * 100)
+        left  = (s - start_min).total_seconds() / span * 100
+        width = max(0.2, (f - s).total_seconds() / span * 100)
         pc = fnum(t.get("percent_complete"))
+        is_summary   = bool(t.get("summary"))
+        is_milestone = bool(t.get("milestone"))
+        is_critical  = bool(t.get("critical"))
 
-        # Bar color
-        if t.get("milestone"):
-            bar_cls = "gantt-bar-milestone"
+        # Determine bar variant (always combined with "gantt-bar" base class)
+        if is_milestone:
+            variant = "milestone"
+        elif is_summary:
+            variant = "summary"
         elif pc >= 100:
-            bar_cls = "gantt-bar-done"
-        elif t.get("critical"):
-            bar_cls = "gantt-bar-critical"
+            variant = "done"
+        elif is_critical:
+            variant = "critical"
         else:
-            bar_cls = "gantt-bar-normal"
+            variant = "normal"
 
         label_cls = "gantt-label"
-        if t["summary"]:   label_cls += " summary"
-        if t["milestone"]: label_cls += " milestone"
-        indent = "  " * int(t.get("outline_level") or 0)
+        if is_summary:   label_cls += " summary"
+        if is_milestone: label_cls += " milestone"
+        indent = "&nbsp;" * (2 * int(t.get("outline_level") or 0))
 
-        title_attr = f'{esc(t["name"])} ({fdate(t["start"])} → {fdate(t["finish"])} · {pc:.0f}%)'
-        progress_inner = ""
-        if not t.get("milestone") and pc > 0:
-            progress_inner = f'<div class="gantt-progress" style="width:{min(100,pc):.0f}%"></div>'
+        title_attr = (f'{esc(t["name"])} · {fdate(t["start"])} → {fdate(t["finish"])} · '
+                      f'{pc:.0f}%{" · crítica" if is_critical else ""}'
+                      f'{" · hito" if is_milestone else ""}')
+
+        # Progress overlay only for regular/critical/done tasks (not summary/milestone)
+        progress_html = ""
+        if variant in ("normal", "critical") and 0 < pc < 100:
+            progress_html = (f'<div class="gantt-progress" '
+                             f'style="width:{100 - min(100,pc):.0f}%;right:0;left:auto;"></div>')
+
+        # Milestone inline style: width handled by CSS (!important), only set left
+        if is_milestone:
+            bar_style = f'left:{left:.2f}%;'
+        else:
+            bar_style = f'left:{left:.2f}%;width:{width:.2f}%;'
+
+        # ----- Baseline bar (below the scheduled bar) -----
+        bl = (t.get("baseline_sets") or {}).get(str(bl_index)) or (t.get("baseline_sets") or {}).get(bl_index)
+        baseline_html = ""
+        if bl:
+            bs = parse_dt(bl.get("start"))
+            bf = parse_dt(bl.get("finish"))
+            if bs and bf:
+                bl_left  = (bs - start_min).total_seconds() / span * 100
+                bl_width = max(0.2, (bf - bs).total_seconds() / span * 100)
+                bl_title = (f'Línea base: {fdate(bl.get("start"))} → {fdate(bl.get("finish"))}')
+                if is_milestone:
+                    baseline_html = (f'<div class="gantt-baseline {variant}" '
+                                     f'style="left:{bl_left:.2f}%" title="{bl_title}"></div>')
+                else:
+                    baseline_html = (f'<div class="gantt-baseline {variant}" '
+                                     f'style="left:{bl_left:.2f}%;width:{bl_width:.2f}%" '
+                                     f'title="{bl_title}"></div>')
 
         parts.append('<div class="gantt-row">')
         parts.append(f'<div class="{label_cls}" title="{title_attr}">{indent}{esc(t["name"])}</div>')
         parts.append('<div class="gantt-track">')
-        parts.append(f'<div class="{bar_cls}" style="left:{left:.2f}%;width:{width:.2f}%;" title="{title_attr}">{progress_inner}</div>')
+        parts.append(f'<div class="gantt-today" style="left:{today_pct:.2f}%"></div>')
+        # Baseline drawn first so it sits below the scheduled bar via z-index
+        parts.append(baseline_html)
+        parts.append(f'<div class="gantt-bar {variant}" style="{bar_style}" title="{title_attr}">{progress_html}</div>')
         parts.append('</div></div>')
 
-    # Today marker (drawn last so it's on top of tracks)
     parts.append('</div>')
 
-    # Inject "today" line as an overlay — we'll render it via an additional
-    # absolutely-positioned container over the axis. For simplicity, just add
-    # a single gantt-today element into the axis header.
-    today_line = (
-        f'<script>document.querySelectorAll(".gantt-track").forEach(track => {{'
-        f'const line = document.createElement("div"); line.className = "gantt-today"; '
-        f'line.style.left = "{today_pct:.2f}%"; track.appendChild(line); }});</script>'
+    legend = (
+        '<div class="gantt-legend">'
+        '<span><span class="sw" style="background:var(--brand)"></span>Tarea normal</span>'
+        '<span><span class="sw" style="background:var(--crit)"></span>Crítica</span>'
+        '<span><span class="sw" style="background:var(--ok)"></span>Completada</span>'
+        '<span><span class="sw sw-summary"></span>Resumen de fase</span>'
+        '<span><span class="sw sw-milestone" style="background:var(--crit)"></span>Hito</span>'
+        '<span><span class="sw sw-baseline"></span>Línea base</span>'
+        '<span><span class="sw" style="background:var(--bad);width:2px;"></span>Hoy</span>'
+        '</div>'
     )
-    return "".join(parts) + today_line
+    return "".join(parts) + legend
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +757,8 @@ def render(bundle_dir: Path, out_path: Path, title_override: str | None = None):
     crit.sort(key=lambda t: parse_dt(t.get("start")) or datetime.max)
 
     # --- HTML chunks ---
-    gantt_html = _build_gantt_html(tasks, status_dt, include_summaries=True, max_rows=80)
+    gantt_html = _build_gantt_html(tasks, status_dt, bl_index=bl_index,
+                                   include_summaries=True, max_rows=120)
 
     risk_rows = []
     for t in risk:
