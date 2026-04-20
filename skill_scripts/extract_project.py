@@ -44,7 +44,16 @@ def _start_jvm():
     import jpype
     if not jpype.isJVMStarted():
         import mpxj
-        mpxj.startJVM()
+        # Pin JVM heap so MPXJ can parse complex schedules in low-memory
+        # containers (Railway, Fly, Render). Override via MPP_JVM_HEAP_MB.
+        # G1GC keeps pauses short for short-lived subprocess invocations.
+        heap_mb = int(os.environ.get("MPP_JVM_HEAP_MB", "768"))
+        mpxj.startJVM(
+            f"-Xmx{heap_mb}m",
+            "-Xms128m",
+            "-XX:+UseG1GC",
+            "-XX:+ExitOnOutOfMemoryError",
+        )
     return jpype
 
 
@@ -523,9 +532,33 @@ def main():
     from org.mpxj.reader import UniversalProjectReader  # type: ignore
     from org.mpxj import TaskField, ResourceField  # type: ignore
 
-    print(f"[mpp-reader] Reading {in_path.name} ({in_path.stat().st_size:,} bytes)...")
+    file_size = in_path.stat().st_size
+    head_bytes = in_path.read_bytes()[:16] if file_size else b""
+    print(f"[mpp-reader] Reading {in_path.name} ({file_size:,} bytes, "
+          f"first bytes: {head_bytes.hex(' ')})")
     reader = UniversalProjectReader()
-    project = reader.read(str(in_path))
+    try:
+        project = reader.read(str(in_path))
+    except Exception as e:
+        sys.stderr.write(
+            f"[mpp-reader] MPXJ raised {type(e).__name__} while reading "
+            f"{in_path.name}: {e}\n"
+        )
+        raise
+
+    if project is None:
+        sys.stderr.write(
+            f"[mpp-reader] MPXJ returned None — file could not be parsed.\n"
+            f"  file: {in_path}\n"
+            f"  size: {file_size:,} bytes\n"
+            f"  first 16 bytes: {head_bytes.hex(' ')}\n"
+            f"  Likely causes:\n"
+            f"    1. JVM heap too small (try increasing MPP_JVM_HEAP_MB)\n"
+            f"    2. Container memory too low (increase Railway memory to 1-2 GB)\n"
+            f"    3. File is truncated or not a recognized format\n"
+            f"    Expected .mpp magic: d0 cf 11 e0 a1 b1 1a e1\n"
+        )
+        sys.exit(3)
 
     # ---- header ----
     props = project.getProjectProperties()
