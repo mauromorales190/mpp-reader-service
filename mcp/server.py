@@ -365,12 +365,29 @@ def query_project(
 
 # ---- entry point ------------------------------------------------------------
 
+# In-memory published dashboard store. Keys are short random IDs, values are
+# (html_bytes, expires_at_epoch). TTL is 7 days; a lazy sweep on each write
+# evicts expired entries so the server doesn't balloon in memory.
+_DASHBOARD_STORE: dict[str, tuple[bytes, float]] = {}
+_DASHBOARD_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days
+
+
+def _sweep_dashboards():
+    import time
+    now = time.time()
+    for key in [k for k, (_, exp) in _DASHBOARD_STORE.items() if exp < now]:
+        _DASHBOARD_STORE.pop(key, None)
+
+
 def _build_http_app():
     """Build a Starlette app that serves the MCP SSE endpoint AND plain HTTP
     endpoints for direct file upload (bypassing the LLM entirely). This is how
     n8n avoids the base64-through-LLM truncation problem: it posts the binary
     directly to /extract or /dashboard, and only passes the small JSON bundle
     (or the final HTML) to the LLM."""
+    import secrets
+    import time
+    from datetime import datetime
     from starlette.routing import Route
     from starlette.responses import JSONResponse, Response
 
@@ -459,11 +476,79 @@ def _build_http_app():
                 headers={"Content-Disposition": f'attachment; filename="{name}"'}
             )
 
+    async def http_dashboard_publish(request):
+        """POST multipart 'file' → generate HTML, store it, return public URL.
+
+        Use this instead of /dashboard when the caller needs a stable shareable
+        link (for emails, Telegram, etc.). Dashboards are retained for 7 days
+        and accessible at /dashboards/{id}."""
+        _sweep_dashboards()
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None:
+            return JSONResponse({"error": "multipart field 'file' is required"}, status_code=400)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            in_path = tmp_p / (upload.filename or "project.mpp")
+            in_path.write_bytes(await upload.read())
+            html_path = tmp_p / "dashboard.html"
+            cmd = ["python3", str(DASHBOARD), str(in_path), "--out", str(html_path)]
+            if form.get("title"):
+                cmd += ["--title", str(form.get("title"))]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                return JSONResponse({"error": r.stderr or r.stdout}, status_code=500)
+            html_bytes = html_path.read_bytes()
+
+        # Mint a short, URL-safe ID. Prefixed with the date for easy scanning.
+        dash_id = f"{datetime.now().strftime('%Y%m%d')}-{secrets.token_urlsafe(6)}"
+        expires_at = time.time() + _DASHBOARD_TTL_SECONDS
+        _DASHBOARD_STORE[dash_id] = (html_bytes, expires_at)
+
+        # Build the public URL — prefer X-Forwarded-* headers from the proxy
+        # (Railway) so the link uses HTTPS and the public hostname.
+        scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+        host = (request.headers.get("x-forwarded-host")
+                or request.headers.get("host")
+                or os.environ.get("MPP_PUBLIC_HOST", "localhost:8765"))
+        public_url = f"{scheme}://{host}/dashboards/{dash_id}"
+
+        return JSONResponse({
+            "id": dash_id,
+            "url": public_url,
+            "expires_at": datetime.fromtimestamp(expires_at).isoformat(),
+            "size_bytes": len(html_bytes),
+        })
+
+    async def http_dashboard_get(request):
+        """GET /dashboards/{id} → serve the stored HTML."""
+        dash_id = request.path_params["id"]
+        entry = _DASHBOARD_STORE.get(dash_id)
+        if entry is None:
+            return Response(
+                "<h1>Dashboard not found</h1><p>It may have expired (7-day TTL) "
+                "or the server restarted.</p>",
+                status_code=404, media_type="text/html",
+            )
+        html_bytes, expires_at = entry
+        if expires_at < time.time():
+            _DASHBOARD_STORE.pop(dash_id, None)
+            return Response(
+                "<h1>Dashboard expired</h1><p>Generate a new one from the n8n workflow.</p>",
+                status_code=410, media_type="text/html",
+            )
+        return Response(
+            content=html_bytes, media_type="text/html",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
     app.routes.extend([
         Route("/health", http_health, methods=["GET"]),
         Route("/extract", http_extract, methods=["POST"]),
         Route("/query/{name}", http_query, methods=["POST"]),
         Route("/dashboard", http_dashboard, methods=["POST"]),
+        Route("/dashboards/publish", http_dashboard_publish, methods=["POST"]),
+        Route("/dashboards/{id}", http_dashboard_get, methods=["GET"]),
     ])
     return app
 
