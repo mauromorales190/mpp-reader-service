@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 # ---- configuration ----------------------------------------------------------
 
@@ -70,7 +71,17 @@ QUERIES = {
     "summary-tree": "Outline / WBS tree with %complete roll-up.",
 }
 
-mcp = FastMCP("mpp-reader")
+# DNS-rebinding protection is on by default in the MCP SDK and only accepts
+# host headers of 127.0.0.1 / localhost. Behind a reverse proxy / PaaS
+# (Railway, Fly, Render, etc.) the Host header is the public hostname, so we
+# disable the default protection. Over HTTPS the remaining attack surface is
+# negligible, and callers still authenticate to the LLM/n8n side.
+_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=False,
+    allowed_hosts=["*"],
+    allowed_origins=["*"],
+)
+mcp = FastMCP("mpp-reader", transport_security=_security)
 
 
 # ---- internals --------------------------------------------------------------
