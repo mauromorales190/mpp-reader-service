@@ -407,11 +407,20 @@ def _build_http_app():
     app = mcp.sse_app()
 
     async def http_health(request):
+        # Enumerate routes DYNAMICALLY from the app's own routing table so this
+        # stays in sync every time new routes are added (no more stale hardcoded list).
+        endpoints = []
+        for r in app.routes:
+            if hasattr(r, "path") and hasattr(r, "methods"):
+                methods = sorted(m for m in (r.methods or []) if m != "HEAD")
+                endpoints.append({"path": r.path, "methods": methods})
+            elif hasattr(r, "path"):
+                endpoints.append({"path": r.path, "methods": ["MOUNT"]})
         return JSONResponse({
             "service": "mpp-reader-mcp",
             "status": "ok",
-            "endpoints": ["/sse", "/messages/", "/extract", "/query/{name}",
-                          "/dashboard", "/build", "/health"],
+            "version": "2026.04.21",
+            "endpoints": endpoints,
             "tools": ["list_queries", "extract_project", "query_project",
                       "build_project", "build_dashboard"],
         })
