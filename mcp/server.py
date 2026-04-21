@@ -54,6 +54,7 @@ EXTRACT   = SCRIPTS_DIR / "extract_project.py"
 QUERY     = SCRIPTS_DIR / "query_project.py"
 BUILD     = SCRIPTS_DIR / "build_project.py"
 DASHBOARD = SCRIPTS_DIR / "build_dashboard.py"
+WBS_HTML  = SCRIPTS_DIR / "build_wbs_html.py"
 
 QUERIES = {
     "status":       "Overall % complete, dates and a list of tasks behind schedule.",
@@ -371,12 +372,24 @@ def query_project(
 _DASHBOARD_STORE: dict[str, tuple[bytes, float]] = {}
 _DASHBOARD_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days
 
+# Separate store for WBS (EDT) pages — TTL 30 days since they're used as
+# reference during the life of a project, not just for day-to-day alerts.
+_WBS_STORE: dict[str, tuple[bytes, float]] = {}
+_WBS_TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days
+
 
 def _sweep_dashboards():
     import time
     now = time.time()
     for key in [k for k, (_, exp) in _DASHBOARD_STORE.items() if exp < now]:
         _DASHBOARD_STORE.pop(key, None)
+
+
+def _sweep_wbs():
+    import time
+    now = time.time()
+    for key in [k for k, (_, exp) in _WBS_STORE.items() if exp < now]:
+        _WBS_STORE.pop(key, None)
 
 
 def _build_http_app():
@@ -542,6 +555,124 @@ def _build_http_app():
             headers={"Cache-Control": "public, max-age=3600"},
         )
 
+    # -------- WBS (EDT) endpoints ---------------------------------------
+    async def http_wbs_publish(request):
+        """POST JSON WBS spec → generate HTML, store it, return public URL.
+
+        Body (JSON): the spec described in build_wbs_html.py (project + wbs tree).
+        Query: `title` optional, overrides project.title.
+        """
+        _sweep_wbs()
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(payload, dict) or "wbs" not in payload:
+            return JSONResponse({"error": "body must be an object with a 'wbs' key"},
+                                status_code=400)
+        title_override = request.query_params.get("title")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            spec_path = tmp_p / "spec.json"
+            spec_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            out_path = tmp_p / "wbs.html"
+            cmd = ["python3", str(WBS_HTML), str(spec_path), "--out", str(out_path)]
+            if title_override:
+                cmd += ["--title", str(title_override)]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                return JSONResponse({"error": r.stderr or r.stdout}, status_code=500)
+            html_bytes = out_path.read_bytes()
+
+        wbs_id = f"wbs-{datetime.now().strftime('%Y%m%d')}-{secrets.token_urlsafe(6)}"
+        expires_at = time.time() + _WBS_TTL_SECONDS
+        _WBS_STORE[wbs_id] = (html_bytes, expires_at)
+
+        scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+        host = (request.headers.get("x-forwarded-host")
+                or request.headers.get("host")
+                or os.environ.get("MPP_PUBLIC_HOST", "localhost:8765"))
+        public_url = f"{scheme}://{host}/wbs/{wbs_id}"
+        return JSONResponse({
+            "id": wbs_id,
+            "url": public_url,
+            "expires_at": datetime.fromtimestamp(expires_at).isoformat(),
+            "size_bytes": len(html_bytes),
+        })
+
+    async def http_wbs_get(request):
+        """GET /wbs/{id} → serve the stored HTML."""
+        wbs_id = request.path_params["id"]
+        entry = _WBS_STORE.get(wbs_id)
+        if entry is None:
+            return Response(
+                "<h1>EDT no encontrada</h1><p>Puede que haya expirado (TTL 30 días) "
+                "o el servidor se haya reiniciado.</p>",
+                status_code=404, media_type="text/html",
+            )
+        html_bytes, expires_at = entry
+        if expires_at < time.time():
+            _WBS_STORE.pop(wbs_id, None)
+            return Response(
+                "<h1>EDT expirada</h1><p>Generá una nueva desde el workflow.</p>",
+                status_code=410, media_type="text/html",
+            )
+        return Response(
+            content=html_bytes, media_type="text/html",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    # -------- Phase-based schedule build -------------------------------
+    async def http_build_from_phases(request):
+        """POST JSON with phase-oriented spec → returns XML (or base64 JSON).
+
+        Query:
+            format=xml|mpx|mpp (default xml)
+            download=true|false (default true)
+        """
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(payload, dict) or "phases" not in payload:
+            return JSONResponse({"error": "body must be an object with a 'phases' key"},
+                                status_code=400)
+
+        fmt = (request.query_params.get("format") or "xml").lower()
+        download = (request.query_params.get("download") or "true").lower() != "false"
+        if fmt not in ("xml", "mpx", "mpp"):
+            return JSONResponse({"error": f"unsupported format {fmt!r}"}, status_code=400)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            spec_path = tmp_p / "spec.json"
+            spec_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            ext = {"xml": ".xml", "mpx": ".mpx", "mpp": ".mpp"}[fmt]
+            out_path = tmp_p / f"project{ext}"
+            cmd = ["python3", str(BUILD), str(spec_path),
+                   "--out", str(out_path), "--format", fmt, "--mode", "phases"]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                status = 501 if "Aspose" in r.stderr else 500
+                return JSONResponse({"error": r.stderr or r.stdout}, status_code=status)
+            data = out_path.read_bytes()
+
+        title = (payload.get("project") or {}).get("title") or "project"
+        filename = title.replace(" ", "_") + ext
+        if download:
+            media = {"xml": "application/xml",
+                     "mpx": "text/plain",
+                     "mpp": "application/vnd.ms-project"}[fmt]
+            return Response(content=data, media_type=media,
+                            headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+        import base64 as _b64
+        return JSONResponse({
+            "filename": filename, "format": fmt,
+            "size_bytes": len(data),
+            "file_b64": _b64.b64encode(data).decode("ascii"),
+        })
+
     app.routes.extend([
         Route("/health", http_health, methods=["GET"]),
         Route("/extract", http_extract, methods=["POST"]),
@@ -549,6 +680,9 @@ def _build_http_app():
         Route("/dashboard", http_dashboard, methods=["POST"]),
         Route("/dashboards/publish", http_dashboard_publish, methods=["POST"]),
         Route("/dashboards/{id}", http_dashboard_get, methods=["GET"]),
+        Route("/wbs/publish", http_wbs_publish, methods=["POST"]),
+        Route("/wbs/{id}", http_wbs_get, methods=["GET"]),
+        Route("/build-from-phases", http_build_from_phases, methods=["POST"]),
     ])
     return app
 
