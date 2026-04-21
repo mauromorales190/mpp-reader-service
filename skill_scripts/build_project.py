@@ -509,6 +509,219 @@ def _write_mpp_with_aspose(mpxj_project, out_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Phase-based spec → task-based spec (with strict sequencing rules)
+# ---------------------------------------------------------------------------
+#
+# Input spec (phase-oriented, friendlier for LLM output):
+# {
+#   "project": { "title": "...", "start_date": "...", ... },
+#   "calendars": [ ... ],
+#   "resources": [
+#       { "id": 1, "name": "Analyst", "type": "WORK", "standard_rate": "50000/h" }
+#   ],
+#   "phases": [
+#     {
+#       "id": "P1",
+#       "name": "Análisis",
+#       "description": "...",
+#       "activities": [
+#         { "id": "A1", "name": "Relevar requisitos",
+#           "duration": "5d", "resource_id": 1, "units": 100,
+#           "predecessor": null, "notes": "..." },
+#         { "id": "A2", "name": "Especificar requisitos",
+#           "duration": "3d", "resource_id": 1, "predecessor": "A1" }
+#       ]
+#     },
+#     { ... next phase ... }
+#   ],
+#   "options": { "save_baseline": true, "milestone_name_prefix": "Hito · " }
+# }
+#
+# Output (after expansion, passed to build_project()):
+#
+#   Project root (level 0, summary, NO relations)
+#     Phase 1 (level 1, summary, NO relations)
+#       Inicio · Phase 1 (level 2, milestone, NO predecessor if first phase of project)
+#       Activity 1         (level 2, predecessor = phase start milestone)
+#       Activity 2         (level 2, predecessor = Activity 1)
+#       ...
+#       Fin · Phase 1      (level 2, milestone, predecessor = last activity)
+#     Phase 2 (level 1, summary, NO relations)
+#       Inicio · Phase 2   (predecessor = Fin · Phase 1)
+#       ...
+#
+# Sequencing invariants (validated after build):
+#   • Summary tasks → NO predecessors, NO successors
+#   • Every non-summary task has ≥1 predecessor EXCEPT the very first
+#   • Every non-summary task has ≥1 successor   EXCEPT the very last
+#   • Each phase summary wraps its children between a Start and End milestone
+
+def build_project_from_phases(spec: dict, out_path: Path, fmt: str = "xml") -> tuple[Path, str]:
+    """Expand a phase-centric spec into a task-centric spec and hand it to
+    build_project() to emit XML/MPX/MPP. Enforces the sequencing rules above."""
+    project_cfg   = dict(spec.get("project") or {})
+    calendars_cfg = spec.get("calendars") or []
+    resources_cfg = list(spec.get("resources") or [])
+    phases_cfg    = spec.get("phases") or []
+    options_cfg   = dict(spec.get("options") or {})
+    start_prefix  = options_cfg.get("milestone_name_prefix_start") or "Inicio · "
+    end_prefix    = options_cfg.get("milestone_name_prefix_end")   or "Fin · "
+
+    if not phases_cfg:
+        raise ValueError("Spec must have at least one phase.")
+
+    # We use dense sequential integer IDs starting at 1 so MPXJ doesn't
+    # complain and so inter-task references are simple.
+    tasks: list[dict] = []
+    assignments: list[dict] = []
+    next_id = 1
+    def new_id() -> int:
+        nonlocal next_id
+        i = next_id
+        next_id += 1
+        return i
+
+    last_phase_end_id: Optional[int] = None
+    activity_remap: dict[str, int] = {}  # original spec id → numeric id (scoped per phase but unique overall)
+
+    for phase_idx, phase in enumerate(phases_cfg):
+        phase_name = phase.get("name") or f"Fase {phase_idx + 1}"
+        # ---- phase summary (level 1, no relations) ------------------------
+        phase_summary_id = new_id()
+        tasks.append({
+            "id": phase_summary_id,
+            "name": phase_name,
+            "outline_level": 1,
+            "summary": True,
+            "notes": phase.get("description") or "",
+        })
+
+        # ---- start milestone (level 2) ------------------------------------
+        start_id = new_id()
+        start_preds = []
+        if last_phase_end_id is not None:
+            start_preds = [{"id": last_phase_end_id, "type": "FS", "lag": "0d"}]
+        tasks.append({
+            "id": start_id,
+            "name": f"{start_prefix}{phase_name}",
+            "outline_level": 2,
+            "milestone": True,
+            "duration": "0d",
+            "predecessors": start_preds,
+        })
+
+        # ---- activities (level 2) chained FS by default -------------------
+        phase_activity_ids: list[int] = []
+        phase_remap: dict[str, int] = {}  # local map used to resolve predecessor refs inside the phase
+        prev_id = start_id
+        for act in (phase.get("activities") or []):
+            act_id = new_id()
+            phase_remap[act["id"]] = act_id
+            activity_remap[act["id"]] = act_id
+
+            # Resolve predecessor: explicit one inside the phase, else chain from previous
+            pred_ref = act.get("predecessor")
+            if pred_ref:
+                pred_numeric = phase_remap.get(pred_ref) or activity_remap.get(pred_ref)
+                if pred_numeric is None:
+                    # Unknown predecessor reference — fall back to chain and warn
+                    pred_numeric = prev_id
+            else:
+                pred_numeric = prev_id
+
+            t = {
+                "id": act_id,
+                "name": act["name"],
+                "outline_level": 2,
+                "duration": act.get("duration") or "1d",
+                "predecessors": [{"id": pred_numeric, "type": act.get("relationship_type") or "FS",
+                                  "lag": act.get("lag") or "0d"}],
+            }
+            if act.get("notes"):
+                t["notes"] = act["notes"]
+            if act.get("constraint_type"):
+                t["constraint_type"] = act["constraint_type"]
+            if act.get("constraint_date"):
+                t["constraint_date"] = act["constraint_date"]
+            tasks.append(t)
+
+            # Assignment
+            if act.get("resource_id") is not None:
+                assignments.append({
+                    "task_id": act_id,
+                    "resource_id": int(act["resource_id"]),
+                    "units": float(act.get("units") or 100),
+                    "work": act.get("work"),
+                })
+
+            phase_activity_ids.append(act_id)
+            prev_id = act_id
+
+        # ---- end milestone (level 2) --------------------------------------
+        end_id = new_id()
+        end_pred_numeric = phase_activity_ids[-1] if phase_activity_ids else start_id
+        tasks.append({
+            "id": end_id,
+            "name": f"{end_prefix}{phase_name}",
+            "outline_level": 2,
+            "milestone": True,
+            "duration": "0d",
+            "predecessors": [{"id": end_pred_numeric, "type": "FS", "lag": "0d"}],
+        })
+        last_phase_end_id = end_id
+
+    # ---- validation: non-summary tasks must have predecessors and successors ----
+    # Summary tasks must not have any predecessors.
+    by_id = {t["id"]: t for t in tasks}
+    has_successor: set[int] = set()
+    for t in tasks:
+        for p in t.get("predecessors") or []:
+            has_successor.add(int(p["id"]))
+
+    warnings_list: list[str] = []
+    non_summary = [t for t in tasks if not t.get("summary")]
+    for i, t in enumerate(non_summary):
+        # Predecessor rule: all except the very first non-summary task
+        has_pred = bool(t.get("predecessors"))
+        if i == 0:
+            if has_pred:
+                warnings_list.append(f"First task '{t['name']}' unexpectedly has a predecessor.")
+        else:
+            if not has_pred:
+                warnings_list.append(f"Task '{t['name']}' (id={t['id']}) lacks a predecessor.")
+        # Successor rule: all except the very last non-summary task
+        if i == len(non_summary) - 1:
+            if t["id"] in has_successor:
+                warnings_list.append(f"Last task '{t['name']}' unexpectedly has a successor.")
+        else:
+            if t["id"] not in has_successor:
+                warnings_list.append(f"Task '{t['name']}' (id={t['id']}) lacks a successor.")
+
+    # Summary tasks: no relations allowed
+    for t in tasks:
+        if t.get("summary") and t.get("predecessors"):
+            warnings_list.append(f"Summary '{t['name']}' has predecessors — removing.")
+            t["predecessors"] = []
+
+    # Stitch together the full spec expected by build_project()
+    full_spec = {
+        "project": project_cfg,
+        "calendars": calendars_cfg,
+        "resources": resources_cfg,
+        "tasks": tasks,
+        "assignments": assignments,
+        "options": options_cfg,
+    }
+    # Print warnings for transparency (they go to stdout and are captured by callers)
+    for w in warnings_list:
+        sys.stderr.write(f"[build_project_from_phases] WARN: {w}\n")
+    if warnings_list:
+        sys.stderr.write(f"[build_project_from_phases] {len(warnings_list)} warning(s) found during sequencing validation.\n")
+
+    return build_project(full_spec, out_path, fmt)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -518,6 +731,9 @@ def main():
     ap.add_argument("--out", required=True, help="Output file path (.xml, .mpx or .mpp)")
     ap.add_argument("--format", choices=["xml", "mpx", "mpp"], default=None,
                     help="Output format. Defaults to the extension of --out (xml if absent).")
+    ap.add_argument("--mode", choices=["tasks", "phases"], default="tasks",
+                    help="'tasks' (default): spec has flat tasks[]. "
+                         "'phases': spec has phases[] with activities; expanded with start/end milestones per phase.")
     args = ap.parse_args()
 
     if args.spec == "-":
@@ -529,7 +745,10 @@ def main():
     out = Path(args.out).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    written, final_fmt = build_project(spec, out, fmt)
+    if args.mode == "phases":
+        written, final_fmt = build_project_from_phases(spec, out, fmt)
+    else:
+        written, final_fmt = build_project(spec, out, fmt)
     print(f"[mpp-reader] Wrote {written} ({final_fmt})")
 
 
