@@ -2,7 +2,7 @@
 
 Servicio contenedorizado que expone la *skill* **mpp-reader** como dos transportes listos para consumir: una **API REST** (FastAPI) y un **servidor MCP** (stdio y SSE). Ambos comparten una única copia de los scripts de parseo (`skill_scripts/`) y usan el mismo extractor respaldado por MPXJ, de manera que no hay lógica duplicada entre transportes.
 
-Con este servicio puedes, desde un workflow de n8n, un cliente LLM (Claude Desktop, Cursor, etc.) o cualquier script que hable HTTP, hacer todo lo que necesita la operación PMO de un proyecto: analizar un `.mpp` existente, generar un cronograma nuevo desde un spec, publicar dashboards EVM/Gantt y publicar EDTs interactivas.
+Con este servicio puedes, desde un workflow de n8n, un cliente LLM (Claude Desktop, Cursor, etc.) o cualquier script que hable HTTP, hacer todo lo que necesita la operación de un proyecto: analizar un `.mpp` existente, generar un cronograma nuevo desde un spec, publicar dashboards EVM/Gantt y publicar EDTs interactivas.
 
 ```
 mpp-reader-service/
