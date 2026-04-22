@@ -78,6 +78,11 @@ HTML = r"""<!DOCTYPE html>
   .legend { display:flex; gap:14px; font-size:11px; color:var(--mute); align-items:center; flex-wrap:wrap; }
   .legend .sw { display:inline-block; width:14px; height:14px; border-radius:3px; margin-right:5px; vertical-align:middle; }
   #search { padding:6px 10px; border:1px solid var(--line); border-radius:6px; font-size:13px; width:220px; }
+  #orient-toggle { padding:6px 12px; border:1px solid var(--line); border-radius:6px; font-size:12.5px;
+                   background:#fff; color:var(--ink); cursor:pointer; font-weight:600; transition:all .15s;
+                   display:flex; align-items:center; gap:6px; }
+  #orient-toggle:hover { background:#f3f4f6; border-color:#94a3b8; }
+  #orient-toggle .ori-icon { font-size:15px; line-height:1; }
 
   main { flex:1; display:flex; overflow:hidden; }
 
@@ -150,6 +155,7 @@ HTML = r"""<!DOCTYPE html>
       <span><span class="sw" style="background:#fed7aa;border:1px solid #f97316;"></span>Hoja Gerencia</span>
     </div>
     <input id="search" type="text" placeholder="Buscar…" oninput="onSearch(this.value)" />
+    <button id="orient-toggle" title="Rotar árbol"><span class="ori-icon">↔</span> Horizontal</button>
   </div>
 </header>
 
@@ -179,6 +185,7 @@ const container = document.getElementById('tree-container');
 
 let selected = null;
 let rootNode = null;
+let orientation = 'horizontal';  // 'horizontal' | 'vertical'
 
 function renderTree() {
   svg.selectAll('*').remove();
@@ -195,30 +202,59 @@ function renderTree() {
   }
   setInitial(root, 0);
 
-  const nodeWidth = 220, nodeHeight = 46, spaceX = 260, spaceY = 58;
-  const tree = d3.tree().nodeSize([spaceY, spaceX]);
+  const nodeWidth = 220, nodeHeight = 46;
+  // Horizontal: [verticalSpacing, horizontalSpacing] → x=vertical, y=horizontal
+  // Vertical:   [horizontalSpacing, verticalSpacing] → x=horizontal, y=vertical
+  const H_SEP_Y = 58,  H_SEP_X = 260;  // horizontal layout
+  const V_SEP_Y = 245, V_SEP_X = 130;  // vertical layout (more x-space for wide rects)
 
   function update() {
+    const isH = orientation === 'horizontal';
+    const tree = d3.tree().nodeSize(isH ? [H_SEP_Y, H_SEP_X] : [V_SEP_Y, V_SEP_X]);
     tree(root);
 
     const nodes = root.descendants();
     const links = root.links();
 
-    // Compute bounds
-    let minY = Infinity, maxY = -Infinity;
-    nodes.forEach(n => { if(n.x < minY) minY = n.x; if(n.x > maxY) maxY = n.x; });
-    const maxDepth = Math.max(...nodes.map(n => n.depth));
-    const width = (maxDepth + 1) * spaceX + nodeWidth + 40;
-    const height = (maxY - minY) + 100;
+    // In d3, tree() always assigns x=along breadth, y=depth.
+    // For horizontal tree: render (x, y) swapped → nodeX=y, nodeY=x
+    // For vertical tree: render as-is → nodeX=x, nodeY=y
+    const nx = d => isH ? d.y : d.x;
+    const ny = d => isH ? d.x : d.y;
 
-    svg.attr('viewBox', `0 ${minY - 50} ${width} ${height}`)
+    // Compute bounds
+    let minNX = Infinity, maxNX = -Infinity, minNY = Infinity, maxNY = -Infinity;
+    nodes.forEach(n => {
+      const x = nx(n), y = ny(n);
+      if (x < minNX) minNX = x; if (x > maxNX) maxNX = x;
+      if (y < minNY) minNY = y; if (y > maxNY) maxNY = y;
+    });
+
+    // Padding depends on node geometry.
+    // Horizontal: rect extends from x=-10 to x=nodeWidth-10 relative to node center; vertical centers (nodeWidth/2 each side).
+    const padLeft   = isH ? 20  : nodeWidth/2 + 20;
+    const padRight  = isH ? nodeWidth + 40 : nodeWidth/2 + 40;
+    const padTop    = nodeHeight/2 + 30;
+    const padBottom = nodeHeight/2 + 30;
+
+    const width  = (maxNX - minNX) + padLeft + padRight;
+    const height = (maxNY - minNY) + padTop + padBottom;
+
+    svg.attr('viewBox', `${minNX - padLeft} ${minNY - padTop} ${width} ${height}`)
        .attr('width', width).attr('height', height);
 
     // Links
-    const linkGen = d3.linkHorizontal().x(d => d.y).y(d => d.x);
+    const linkGen = isH
+      ? d3.linkHorizontal().x(d => d.y).y(d => d.x)
+      : d3.linkVertical().x(d => d.x).y(d => d.y);
     const link = svg.selectAll('.link').data(links, d => d.target.data.id);
     link.exit().remove();
     link.enter().append('path').attr('class','link').merge(link).attr('d', linkGen);
+
+    // Rect x offset depends on orientation
+    const rectX = isH ? -10 : -nodeWidth/2;
+    const textX = isH ? 0 : -nodeWidth/2 + 10;
+    const badgeCx = isH ? (nodeWidth - 20) : (nodeWidth/2 - 10);
 
     // Nodes
     const node = svg.selectAll('.node-box').data(nodes, d => d.data.id);
@@ -237,35 +273,34 @@ function renderTree() {
         }
       });
 
-    nEnter.append('rect').attr('x', -10).attr('y', -nodeHeight/2)
+    nEnter.append('rect').attr('y', -nodeHeight/2)
           .attr('width', nodeWidth).attr('height', nodeHeight);
-    nEnter.append('text').attr('class','node-id').attr('x', 0).attr('y', -nodeHeight/2 + 14);
+    nEnter.append('text').attr('class','node-id').attr('y', -nodeHeight/2 + 14);
     nEnter.append('text').attr('class', d => 'node-name' + (d.data.is_leaf ? ' leaf':''))
-          .attr('x', 0).attr('y', -nodeHeight/2 + 30);
+          .attr('y', -nodeHeight/2 + 30);
     // Collapse indicator (circle + count) for non-leaves
     const collapseG = nEnter.append('g').attr('class','collapse-g');
-    collapseG.append('circle').attr('class','collapse-circle')
-             .attr('cx', nodeWidth - 20).attr('cy', 0).attr('r', 9);
-    collapseG.append('text').attr('class','collapse-badge')
-             .attr('x', nodeWidth - 20).attr('y', 0);
+    collapseG.append('circle').attr('class','collapse-circle').attr('cy', 0).attr('r', 9);
+    collapseG.append('text').attr('class','collapse-badge').attr('y', 0);
 
     // Merge
     const nAll = nEnter.merge(node)
-      .attr('transform', d => `translate(${d.y},${d.x})`)
+      .attr('transform', d => `translate(${nx(d)},${ny(d)})`)
       .attr('class', d => 'node-box ' +
                         (d.data.branch === 'management' ? 'branch-management' : 'branch-product') +
                         (d.data.is_leaf ? ' leaf' : '') +
                         (selected && selected.data.id === d.data.id ? ' selected' : ''));
 
-    nAll.select('.node-id').text(d => d.data.id);
-    nAll.select('.node-name').text(d => {
+    nAll.select('rect').attr('x', rectX);
+    nAll.select('.node-id').attr('x', textX).text(d => d.data.id);
+    nAll.select('.node-name').attr('x', textX).text(d => {
       const n = d.data.name || '';
       return n.length > 30 ? n.slice(0, 28) + '…' : n;
     });
     nAll.select('.collapse-g').attr('display', d => d.data.is_leaf ? 'none' : null);
-    nAll.select('.collapse-circle')
+    nAll.select('.collapse-circle').attr('cx', badgeCx)
         .attr('class', d => 'collapse-circle' + (d._children ? ' collapse-circle-collapsed' : ''));
-    nAll.select('.collapse-badge').text(d => {
+    nAll.select('.collapse-badge').attr('x', badgeCx).text(d => {
       if (d.data.is_leaf) return '';
       const count = (d._children || d.children || []).length;
       return d._children ? '+' + count : '−';
@@ -284,6 +319,16 @@ function renderTree() {
   update();
   window._treeUpdate = update;
 }
+
+// Toggle button
+document.getElementById('orient-toggle').addEventListener('click', () => {
+  orientation = orientation === 'horizontal' ? 'vertical' : 'horizontal';
+  const btn = document.getElementById('orient-toggle');
+  btn.innerHTML = orientation === 'horizontal'
+    ? '<span class="ori-icon">↔</span> Horizontal'
+    : '<span class="ori-icon">↕</span> Vertical';
+  window._treeUpdate && window._treeUpdate();
+});
 
 function selectNode(d) {
   selected = d;
