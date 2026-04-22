@@ -394,7 +394,15 @@ function openSide(d) {
         `</ul></section>`;
     }
   } else if (n.is_leaf) {
-    html += `<section><div class="empty-state">Sin diccionario generado para esta hoja.</div></section>`;
+    if (n.branch === 'management') {
+      html += `<section><div class="empty-state" style="background:#fff7ed;color:#9a3412;border-left:3px solid #f97316;padding:12px;">` +
+              `<strong>Documento PMBOK estándar.</strong><br>` +
+              `Este entregable sigue una plantilla conocida del PMBOK y no requiere diccionario específico. ` +
+              `La guía de elaboración (criterios, contenido mínimo, responsables) está en el Plan de Gestión correspondiente dentro de Planes Estructurales.` +
+              `</div></section>`;
+    } else {
+      html += `<section><div class="empty-state">Sin diccionario generado para esta hoja.</div></section>`;
+    }
   }
 
   document.getElementById('side-content').innerHTML = html;
